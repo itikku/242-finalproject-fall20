@@ -1,0 +1,479 @@
+---
+title: "FinalProject"
+author: "Ishan Tikku"
+date: "11/23/2020"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caTools)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(randomForest)
+library(car)
+```
+
+### Load the data, and feature engineer
+
+```{r cars}
+data = read.csv("building_energy_data_final.csv")
+data$Property.Type = as.factor(data$Property.Type)
+data$Property.Type...Self.Selected = as.factor(data$Property.Type...Self.Selected)
+data$Is.Downtown = as.factor(data$Is.Downtown)
+str(data)
+```
+
+```{r}
+data = subset(data,
+  select = -c(Total.GHG.Emissions..Metric.Tons.CO2e., Reason.for.Exemption, Benchmark.Status, Energy.Audit.Status))
+
+```
+
+
+### Create training and testing datasets, based on time
+
+```{r}
+data.train = data %>% filter(data$year < 2018)
+data.test = data %>% filter(data$year >= 2018)
+```
+
+
+### Analysis of inter-column correlation
+
+
+Graph current year data vs. previous year data:
+```{r}
+
+plot(data.train$Previous.Year.ENERGY.STAR.Score, data.train$ENERGY.STAR.Score, main="Current Year vs. Previous Year",
+   xlab="Previous Year Score ", ylab="Current Year Score", pch=19)
+
+plot(data.train$Two.Years.Ago.ENERGY.STAR.Score, data.train$ENERGY.STAR.Score, main="Current Year vs. Two Years Ago",
+   xlab="Two Years Ago Score ", ylab="Current Year Score", pch=19)
+
+```
+
+```{r}
+correlation_data = subset(data, select = -c(Parcel.s., Building.Name, Building.Address, Full.Address, Energy.Audit.Due.Date, PIM.Link, Property.Type, Property.Type...Self.Selected, Is.Downtown, X))
+cor(correlation_data, y=correlation_data, use="pairwise.complete.obs")
+```
+
+## CART model and results
+
+
+### CART Model v1 - Site AND Source EUI
+```{r}
+
+#Clean up null values
+cart_v1.train <- data.train[(!is.na(data.train$Site.EUI..kBtu.ft2.) & 
+                                       !is.na(data.train$Source.EUI..kBtu.ft2.) &
+                                       !is.na(data.train$Weather.Normalized.Site.EUI..kBtu.ft2.) &
+                                       !is.na(data.train$Weather.Normalized.Source.EUI..kBtu.ft2.) &
+                                       !is.na(data.train$Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2.) &
+                                       !is.na(data.train$Age.In.Years) & 
+                                       !is.na(data.train$Property.Type) 
+                             & !is.na(data.train$Is.Downtown)
+                             ),]
+
+set.seed(3421)
+train.cart.v1 = train(ENERGY.STAR.Score ~ Site.EUI..kBtu.ft2. + Source.EUI..kBtu.ft2. + Weather.Normalized.Site.EUI..kBtu.ft2. + Weather.Normalized.Source.EUI..kBtu.ft2. + Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2. + Age.In.Years + Property.Type + Is.Downtown,
+   data = cart_v1.train,
+   method = "rpart",
+   tuneGrid = data.frame(cp=seq(0, 0.4, 0.002)),
+   trControl = trainControl(method="cv", number=5))
+train.cart.v1
+train.cart.v1$results
+```
+
+```{r}
+mod.cart.v1 = train.cart.v1$finalModel
+prp(mod.cart.v1)
+```
+
+### CART Model v2 - just Site EUI
+```{r}
+#Clean up null values
+cart_v2.train <- data.train[(!is.na(data.train$Site.EUI..kBtu.ft2.) &
+                                       !is.na(data.train$Age.In.Years) & 
+                                       !is.na(data.train$Property.Type) &
+                                       !is.na(data.train$Is.Downtown)),]
+
+set.seed(3421)
+train.cart.v2 = train(ENERGY.STAR.Score ~ Site.EUI..kBtu.ft2. + Age.In.Years + Property.Type + Is.Downtown,
+   data = cart_v2.train,
+   method = "rpart",
+   tuneGrid = data.frame(cp=seq(0, 0.4, 0.002)),
+   trControl = trainControl(method="cv", number=5))
+train.cart.v2$results
+```
+
+
+```{r}
+mod.cart.v2 = train.cart.v2$finalModel
+prp(mod.cart.v2)
+```
+
+
+### CART Model v3 - including Year - 1 data, using just Site EUI
+```{r}
+#Clean up null values
+
+cart_v3.train <- data.train
+
+cart_v3.train <- cart_v3.train[(!is.na(cart_v3.train$Site.EUI..kBtu.ft2.) &
+                                       !is.na(cart_v3.train$Age.In.Years) & 
+                                       !is.na(cart_v3.train$Property.Type) &
+                                       !is.na(cart_v3.train$Is.Downtown) &
+                                       !is.na(cart_v3.train$Previous.Year.ENERGY.STAR.Score)
+                            ),]
+
+set.seed(3421)
+train.cart.v3 = train(ENERGY.STAR.Score ~ Site.EUI..kBtu.ft2. 
+                       + Age.In.Years + Property.Type + Is.Downtown + Previous.Year.ENERGY.STAR.Score,
+   data = cart_v3.train,
+   method = "rpart",
+   tuneGrid = data.frame(cp=seq(0, 0.4, 0.002)),
+   trControl = trainControl(method="cv", number=5))
+train.cart.v3$results
+```
+
+
+```{r}
+mod.cart.v3 = train.cart.v3$finalModel
+prp(mod.cart.v3)
+```
+
+
+## CART Model v4 - including Year - 1 AND Year - 2 data, using just Site EUI
+
+```{r}
+#Clean up null values
+
+cart_v4.train <- data.train
+
+cart_v4.train <- cart_v4.train[(!is.na(cart_v4.train$Site.EUI..kBtu.ft2.) & 
+                                       !is.na(cart_v4.train$Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2.) &
+                                       !is.na(cart_v4.train$Age.In.Years) & 
+                                       !is.na(cart_v4.train$Property.Type) &
+                                       !is.na(cart_v4.train$Is.Downtown) &
+                                       !is.na(cart_v4.train$Previous.Year.ENERGY.STAR.Score) &
+                                       !is.na(cart_v4.train$Two.Years.Ago.ENERGY.STAR.Score)
+                            ),]
+
+set.seed(3421)
+train.cart.v4 = train(ENERGY.STAR.Score ~ Site.EUI..kBtu.ft2. 
+                      #+ Weather.Normalized.Site.EUI..kBtu.ft2. 
+                      + Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2. + Age.In.Years + Property.Type + Is.Downtown + Previous.Year.ENERGY.STAR.Score + Two.Years.Ago.ENERGY.STAR.Score,
+   data = cart_v4.train,
+   method = "rpart",
+   tuneGrid = data.frame(cp=seq(0, 0.4, 0.002)),
+   trControl = trainControl(method="cv", number=5))
+train.cart.v4
+train.cart.v4$results
+```
+
+
+```{r}
+mod.cart.v4 = train.cart.v4$finalModel
+prp(mod.cart.v4)
+```
+
+**IN CONCLUSION, including two years of historical data showed about a 2% improvement in R^2 over using just one year's worth of data. As a result, we will opt to keep both features**
+
+## CART Model v5 - using Weather Normalized Site EUI
+
+```{r}
+#Clean up null values
+
+cart_v5.train <- data.train
+
+cart_v5.train <- cart_v5.train[(!is.na(cart_v5.train$Weather.Normalized.Site.EUI..kBtu.ft2.) & 
+                                       !is.na(cart_v5.train$Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2.) &
+                                       !is.na(cart_v5.train$Age.In.Years) & 
+                                       !is.na(cart_v5.train$Property.Type) &
+                                       !is.na(cart_v5.train$Is.Downtown) &
+                                       !is.na(cart_v5.train$Previous.Year.ENERGY.STAR.Score) & 
+                                       !is.na(cart_v5.train$Two.Years.Ago.ENERGY.STAR.Score)
+                            ),]
+
+set.seed(3421)
+train.cart.v5 = train(ENERGY.STAR.Score ~ Weather.Normalized.Site.EUI..kBtu.ft2. 
+                      + Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2. + Age.In.Years + Property.Type + Is.Downtown + Previous.Year.ENERGY.STAR.Score + Two.Years.Ago.ENERGY.STAR.Score,
+   data = cart_v5.train,
+   method = "rpart",
+   tuneGrid = data.frame(cp=seq(0, 0.4, 0.002)),
+   trControl = trainControl(method="cv", number=5))
+train.cart.v5
+train.cart.v5$results
+```
+
+
+```{r}
+mod.cart.v5 = train.cart.v5$finalModel
+prp(mod.cart.v5)
+```
+
+**Using the weather normalized field led to a slightly lower R^2 - no value in switching from Site EUI, which has more non-null records**
+
+## CART Model v6
+
+Using ONLY the Recalculated GHG Intensity column and no EUI data (due to high correlation between both)
+
+```{r}
+#Clean up null values
+
+cart_v6.train <- data.train
+
+cart_v6.train <- cart_v6.train[(
+                                 !is.na(cart_v6.train$Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2.) &
+                                 !is.na(cart_v6.train$Age.In.Years) & 
+                                 !is.na(cart_v6.train$Property.Type) &
+                                 !is.na(cart_v6.train$Is.Downtown) &
+                                 !is.na(cart_v6.train$Previous.Year.ENERGY.STAR.Score) &
+                                 !is.na(cart_v6.train$Two.Years.Ago.ENERGY.STAR.Score)
+                            ),]
+
+set.seed(3421)
+train.cart.v6 = train(ENERGY.STAR.Score ~  Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2. + Age.In.Years + Property.Type + Is.Downtown + Previous.Year.ENERGY.STAR.Score,
+   data = cart_v6.train,
+   method = "rpart",
+   tuneGrid = data.frame(cp=seq(0, 0.4, 0.002)),
+   trControl = trainControl(method="cv", number=5))
+train.cart.v6
+train.cart.v6$results
+```
+
+
+```{r}
+mod.cart.v6 = train.cart.v6$finalModel
+prp(mod.cart.v6)
+```
+
+
+**In conclusion, given the high correlation between the GHG Intensity column, and EUI data, and the lack of meaningful difference between models that include one vs. both, we will exclude the EUI as a feature.**
+
+
+## CART Model v7
+
+Checking if taking out Property Type has any impact
+
+```{r}
+#Clean up null values
+
+cart_v7.train <- data.train
+
+cart_v7.train <- cart_v7.train[(
+                                 !is.na(cart_v7.train$Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2.) &
+                                 !is.na(cart_v7.train$Age.In.Years) & 
+                                 !is.na(cart_v7.train$Is.Downtown) &
+                                 !is.na(cart_v7.train$Previous.Year.ENERGY.STAR.Score) &
+                                 !is.na(cart_v7.train$Two.Years.Ago.ENERGY.STAR.Score)
+                            ),]
+
+set.seed(3421)
+train.cart.v7 = train(ENERGY.STAR.Score ~  Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2. + Age.In.Years + Is.Downtown + Previous.Year.ENERGY.STAR.Score,
+   data = cart_v7.train,
+   method = "rpart",
+   tuneGrid = data.frame(cp=seq(0, 0.4, 0.002)),
+   trControl = trainControl(method="cv", number=5))
+train.cart.v7
+train.cart.v7$results
+```
+
+
+```{r}
+mod.cart.v7 = train.cart.v7$finalModel
+prp(mod.cart.v7)
+```
+**Removing Property Type resulted in a loss of about 1% of R^2.**
+
+
+
+## CART v8
+
+Checking the power of model with just Recalculated + Previous Year fields
+```{r}
+#Clean up null values
+
+cart_v8.train <- data.train
+
+cart_v8.train <- cart_v8.train[(
+                                 !is.na(cart_v8.train$Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2.) &
+                                 !is.na(cart_v8.train$Previous.Year.ENERGY.STAR.Score)
+                            ),]
+
+set.seed(3421)
+train.cart.v8 = train(ENERGY.STAR.Score ~  Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2. + Previous.Year.ENERGY.STAR.Score,
+   data = cart_v8.train,
+   method = "rpart",
+   tuneGrid = data.frame(cp=seq(0, 0.4, 0.002)),
+   trControl = trainControl(method="cv", number=5))
+train.cart.v8
+train.cart.v8$results
+```
+
+
+```{r}
+mod.cart.v8 = train.cart.v8$finalModel
+prp(mod.cart.v8)
+```
+
+## CART v9
+
+Using just Emission Intensity + Year - 1 + Year - 2
+
+```{r}
+#Clean up null values
+
+cart_v9.train <- data.train
+
+cart_v9.train <- cart_v9.train[(
+                                 !is.na(cart_v9.train$Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2.) &
+                                 !is.na(cart_v9.train$Previous.Year.ENERGY.STAR.Score) &
+                                 !is.na(cart_v9.train$Two.Years.Ago.ENERGY.STAR.Score)
+                            ),]
+
+set.seed(3421)
+train.cart.v9 = train(ENERGY.STAR.Score ~  Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2. + Previous.Year.ENERGY.STAR.Score + Two.Years.Ago.ENERGY.STAR.Score ,
+   data = cart_v9.train,
+   method = "rpart",
+   tuneGrid = data.frame(cp=seq(0, 0.4, 0.002)),
+   trControl = trainControl(method="cv", number=5))
+train.cart.v9
+train.cart.v9$results
+```
+
+
+```{r}
+mod.cart.v9 = train.cart.v9$finalModel
+prp(mod.cart.v9)
+```
+
+
+
+
+Given that CART gave us three variables of importance, we will use this as a starting point for the model
+- GHG Emissions Intensity
+- Previous Year Score
+- Two Years Ago
+
+
+## Boosting Models
+
+### Boosting model v1 - Just 3 features
+```{r}
+boosting_v1.train <- data.train
+boosting_v1.train <- boosting_v1.train[(
+                                 !is.na(boosting_v1.train$Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2.) &
+                                 !is.na(boosting_v1.train$Previous.Year.ENERGY.STAR.Score) &
+                                 !is.na(boosting_v1.train$Two.Years.Ago.ENERGY.STAR.Score)
+                            ),]
+
+tGrid = expand.grid(n.trees = (80:85)*50, interaction.depth = c(1,2,4,6,8,10,12,14,16),
+                    shrinkage = 0.01, n.minobsinnode = 10)
+
+set.seed(456)
+
+train.boost.v1 <- train(ENERGY.STAR.Score ~ Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2. + Previous.Year.ENERGY.STAR.Score + Two.Years.Ago.ENERGY.STAR.Score,
+                     data = boosting_v1.train,
+                     method = "gbm",
+                     tuneGrid = tGrid,
+                     trControl = trainControl(method="cv", number=5, verboseIter = FALSE),
+                     metric = "Rsquared",
+                     train.fraction = 0.99
+                     #distribution = "bernoulli"
+                     )
+train.boost.v1$results
+```
+
+```{r}
+mod.boost.v1 = train.boost.v1$finalModel
+mod.boost.v1$interaction.depth
+mod.boost.v1$n.trees
+```
+
+### Boosting model v2 - additional features
+```{r}
+
+boosting_v2.train <- data.train
+boosting_v2.train <- boosting_v2.train[(
+                                 !is.na(boosting_v2.train$Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2.) &
+                                 !is.na(boosting_v2.train$Age.In.Years) & 
+                                 !is.na(boosting_v2.train$Is.Downtown) &
+                                 !is.na(boosting_v2.train$Previous.Year.ENERGY.STAR.Score) &
+                                 !is.na(boosting_v2.train$Two.Years.Ago.ENERGY.STAR.Score)
+                            ),]
+
+tGrid = expand.grid(n.trees = (80:85)*50, interaction.depth = c(1,2,4,6,8,10,12,14,16),
+                    shrinkage = 0.01, n.minobsinnode = 10)
+
+set.seed(456)
+
+train.boost.v2 <- train(ENERGY.STAR.Score ~ Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2. + Age.In.Years + Is.Downtown + Previous.Year.ENERGY.STAR.Score + Two.Years.Ago.ENERGY.STAR.Score,
+                     data = boosting_v2.train,
+                     method = "gbm",
+                     tuneGrid = tGrid,
+                     trControl = trainControl(method="cv", number=5, verboseIter = FALSE),
+                     metric = "Rsquared",
+                     train.fraction = 1.0
+                     #distribution = "bernoulli"
+                     )
+```
+
+```{r}
+train.boost.v2
+train.boost.v2$results
+```
+```{r}
+mod.boost.v2 = train.boost.v2$finalModel
+mod.boost.v2$interaction.depth
+mod.boost.v2$n.trees
+```
+
+
+
+## CART OSR^2
+```{r}
+
+cleaned.test = as.data.frame(model.matrix(ENERGY.STAR.Score ~  Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2. + Age.In.Years + Is.Downtown + Previous.Year.ENERGY.STAR.Score + Two.Years.Ago.ENERGY.STAR.Score, data = data.test))
+
+cleaned.test.compare = as.data.frame(model.matrix(X ~ ENERGY.STAR.Score + Recalculated.GHG.Emissions.Intensity..kgCO2e.ft2. + Age.In.Years + Is.Downtown + Previous.Year.ENERGY.STAR.Score + Two.Years.Ago.ENERGY.STAR.Score, data = data.test))
+```
+
+```{r}
+predict.cart = predict(mod.cart.v9, newdata = cleaned.test, type = "vector")
+predict.cart
+
+SSE.cart = sum((cleaned.test.compare$ENERGY.STAR.Score - predict.cart)^2)
+SST.cart = sum((cleaned.test.compare$ENERGY.STAR.Score - mean(data.train$ENERGY.STAR.Score))^2)
+OSR2.cart = 1 - SSE.cart/SST.cart
+OSR2.cart
+```
+
+
+## Boosting OSR^2 - Model 1
+```{r}
+predict.boost = predict(mod.boost.v1, newdata = cleaned.test, n.trees = 4200, type = "response")
+head(predict.boost)
+#make sure that the order of predict.final is the same as the letters.test set
+#predict.final <- factor(apply(predict.boost, 1, which.max), levels = c(1,2,3,4), labels = c("A", "B", "P", "R"))
+SSE.boost = sum((cleaned.test.compare$ENERGY.STAR.Score - predict.boost)^2)
+SST.boost = sum((cleaned.test.compare$ENERGY.STAR.Score - mean(data.train$ENERGY.STAR.Score))^2)
+OSR2.boost.v1 = 1 - SSE.boost/SST.boost
+OSR2.boost.v1
+```
+
+## Boosting OSR^2 - Model 2
+```{r}
+predict.boost = predict(mod.boost.v2, newdata = cleaned.test, n.trees = 4200, type = "response")
+head(predict.boost)
+#make sure that the order of predict.final is the same as the letters.test set
+#predict.final <- factor(apply(predict.boost, 1, which.max), levels = c(1,2,3,4), labels = c("A", "B", "P", "R"))
+SSE.boost = sum((cleaned.test.compare$ENERGY.STAR.Score - predict.boost)^2)
+SST.boost = sum((cleaned.test.compare$ENERGY.STAR.Score - mean(data.train$ENERGY.STAR.Score))^2)
+OSR2.boost.v2 = 1 - SSE.boost/SST.boost
+OSR2.boost.v2
+```
